@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 
 
-def make_workflow(prompt, width=832, height=480, length=124, seed=424242):
+def make_workflow(prompt, width=832, height=480, length=124, seed=424242, motion=False):
     def n(kind, **inputs):
         return {'class_type': kind, 'inputs': inputs}
-    return {
+    workflow = {
         'unet': n('UNETLoader', unet_name='minimax_h3_ref2va_pruned_int8_convrot.safetensors', weight_dtype='default'),
         'clip': n('CLIPLoader', clip_name='qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors', type='minimax', device='default'),
         'vae_video': n('VAELoader', vae_name='minimax_h3_video_vae_fp16.safetensors'),
@@ -26,14 +26,31 @@ def make_workflow(prompt, width=832, height=480, length=124, seed=424242):
         'video': n('CreateVideo', images=['decode_video', 0], fps=24, audio=['decode_audio', 0]),
         'save': n('SaveVideo', video=['video', 0], filename_prefix='video/H3_REF2V', format='mp4', codec='h264'),
     }
+    if motion:
+        workflow['motion'] = n('LoadVideo', file='motion-reference.mp4')
+        workflow['motion_frames'] = n('GetVideoComponents', video=['motion', 0])
+        workflow['cond']['inputs']['ref_videos.ref_video_0'] = ['motion_frames', 0]
+    return workflow
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('reference', type=Path)
+    parser.add_argument('--motion', type=Path, help='MP4 motion reference, prepared at 24 fps')
+    parser.add_argument('--width', type=int, default=832)
+    parser.add_argument('--height', type=int, default=480)
+    parser.add_argument('--length', type=int, default=124)
     parser.add_argument('--prompt', default='The adult character from <Picture 1> smiles softly and turns her head toward the camera. A steady cinematic shot, natural movement, quiet room ambience.')
     args = parser.parse_args()
     raw = args.reference.read_bytes()
     if not raw.startswith(b'\x89PNG\r\n\x1a\n'):
         parser.error('Provide a PNG reference image')
-    print(json.dumps({'input': {'workflow': make_workflow(args.prompt), 'images': [{'name': 'reference.png', 'image': base64.b64encode(raw).decode()}]}}))
+    if args.width <= 0 or args.height <= 0 or args.width % 16 or args.height % 16 or args.length < 1:
+        parser.error('Use positive dimensions divisible by 16 and a positive frame count')
+    images = [{'name': 'reference.png', 'image': base64.b64encode(raw).decode()}]
+    if args.motion:
+        video = args.motion.read_bytes()
+        if len(video) < 12 or video[4:8] != b'ftyp':
+            parser.error('Provide an MP4 motion reference')
+        images.append({'name': 'motion-reference.mp4', 'image': base64.b64encode(video).decode()})
+    print(json.dumps({'input': {'workflow': make_workflow(args.prompt, args.width, args.height, args.length, motion=bool(args.motion)), 'images': images}}))
