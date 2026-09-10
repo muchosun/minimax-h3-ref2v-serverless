@@ -1,0 +1,9 @@
+.git
+__pycache__
+*.pyc
+.env*
+request.json
+results
+*.mp4
+*.png
+*.safetensors
